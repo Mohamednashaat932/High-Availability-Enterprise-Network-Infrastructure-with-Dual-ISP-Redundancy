@@ -1,0 +1,201 @@
+================================================================================================
+SUBNETTING TABLE - ENTERPRISE NETWORK WITH HA FORTIGATE AND DUAL-ISP SD-WAN
+Routing: OSPF (Cores <-> FortiGate) + SD-WAN default route (FortiGate -> ISPs)
+Platform: EVE-NG | Firewalls: FortiGate VM64-KVM (FortiOS 6.4.6) | Core/Access: Cisco
+================================================================================================
+
+================================================================================================
+1. TRANSIT, WAN AND MANAGEMENT LINKS (/29)
+================================================================================================
+
+#  Network         Mask             IP-1                   IP-2                    Broadcast   Description
+-  --------------  ---------------  ---------------------  ----------------------  ----------  ----------------------------------------------
+1  12.0.0.0 /29    255.255.255.248  12.0.0.1 (FG cluster)  12.0.0.2 (NH_PRIM SVI)  12.0.0.7    FortiGate port1 <-> NH_PRIM (VLAN 12)
+2  12.1.0.0 /29    255.255.255.248  12.1.0.1 (FG cluster)  12.1.0.2 (NH_SEC SVI)   12.1.0.7    FortiGate port2 <-> NH_SEC (VLAN 13)
+3  100.64.0.0 /29  255.255.255.248  100.64.0.1 (ISP1)      100.64.0.3 (FG port6)   100.64.0.7  WAN 1: ISP1 Vodafone (VLAN 100 on WAN_SWITCH1)
+4  100.65.0.0 /29  255.255.255.248  100.65.0.1 (ISP2)      100.65.0.3 (FG port7)   100.65.0.7  WAN 2: ISP2 WE (VLAN 100 on WAN_SWITCH2)
+
+NOTE: FG-1 and FG-2 share the same interface IPs. The ACTIVE unit owns the cluster IP (HA active-passive).
+NOTE: ISP1 e2/1 and ISP2 e2/1 (NAT outside) get their IP by DHCP from the lab internet cloud.
+NOTE: Usable IPs per /29 = 6 (.1 to .6)
+
+Link                      Network          Addresses
+------------------------  ---------------  ----------------------------------------------------------
+HA heartbeat              port3 and port4  Direct links FG-1 <-> FG-2 (no IP on the data path)
+Out-of-band mgmt (port5)  192.168.1.0 /24  FG-1 = 192.168.1.52 | FG-2 = 192.168.1.53 | GW 192.168.1.1
+
+================================================================================================
+2. USER VLAN SUBNETS (HSRP, Gateway = VIP .254)
+================================================================================================
+
+VLAN  Name          Network         Mask           HSRP VIP (GW)  NH_PRIM SVI  NH_SEC SVI  Active Core  Broadcast     Hosts
+----  ------------  --------------  -------------  -------------  -----------  ----------  -----------  ------------  -----
+10    PCs / Users   10.10.10.0 /24  255.255.255.0  10.10.10.254   10.10.10.1   10.10.10.2  NH_PRIM      10.10.10.255  254
+20    IP Phones     10.20.20.0 /24  255.255.255.0  10.20.20.254   10.20.20.1   10.20.20.2  NH_PRIM      10.20.20.255  254
+30    Wi-Fi / WLAN  10.30.30.0 /24  255.255.255.0  10.30.30.254   10.30.30.1   10.30.30.2  NH_SEC       10.30.30.255  254
+40    Management    10.40.40.0 /24  255.255.255.0  10.40.40.254   10.40.40.1   10.40.40.2  NH_SEC       10.40.40.255  254
+50    Servers       10.50.50.0 /24  255.255.255.0  10.50.50.254   10.50.50.1   10.50.50.2  NH_SEC       10.50.50.255  254
+
+HSRP : VIP (.254) = Active Gateway | Active core has priority 110 with preempt | other core = Standby
+MSTP : Instance 1 (VLAN 10,20) root = NH_PRIM (24576) | Instance 2 (VLAN 30,40,50) root = NH_SEC (24576)
+Region: SPMST
+
+================================================================================================
+3. TRANSIT VLANs ON THE CORES
+================================================================================================
+
+Core              VLAN  Name           SVI IP        Member ports           Connected to
+----------------  ----  -------------  ------------  ---------------------  -------------------------
+NH_PRIM (CORE_1)  12    FW_TRANSIT_C1  12.0.0.2 /29  Gi1/1, Gi1/2 (access)  FG-1 port1 and FG-2 port1
+NH_SEC  (CORE_2)  13    FW_TRANSIT_C2  12.1.0.2 /29  Gi1/1, Gi1/2 (access)  FG-1 port2 and FG-2 port2
+
+NOTE: Both FortiGates are in the same L2 segment on each core, so the cluster IP follows the active unit on failover.
+
+================================================================================================
+4. DEVICE INTERFACE IP SUMMARY
+================================================================================================
+
+--- FortiGate HA Cluster (FG-1 primary / FG-2 secondary) ---
+
+Interface      Alias       IP Address                        Description
+-------------  ----------  --------------------------------  ----------------------------------------
+port1          LAN         12.0.0.1 /29                      To NH_PRIM (OSPF)
+port2          LAN_BACKUP  12.1.0.1 /29                      To NH_SEC (OSPF)
+port3 / port4  -           -                                 HA heartbeat
+port5          MGMT        192.168.1.52 (FG-1) / .53 (FG-2)  Out-of-band management
+port6          WAN         100.64.0.3 /29                    To WAN_SWITCH1 -> ISP1 (SD-WAN member 1)
+port7          WAN_BACKUP  100.65.0.3 /29                    To WAN_SWITCH2 -> ISP2 (SD-WAN member 2)
+
+--- NH_PRIM (CORE_1) | OSPF Router-ID 1.1.1.1 ---
+
+Interface                      IP Address    Description
+-----------------------------  ------------  ----------------------------------
+Vlan12                         12.0.0.2 /29  To FortiGate cluster (OSPF Area 0)
+Vlan10 / 20 / 30 / 40 / 50     10.x.x.1 /24  SVIs + HSRP (VIP .254)
+Port-channel1 (Gi0/3 + Gi1/0)  -             Trunk to NH_SEC, VLAN 10-50
+Gi0/0, Gi0/1, Gi0/2            -             Trunks to ACC-1, ACC-2, ACC-3
+
+--- NH_SEC (CORE_2) | OSPF Router-ID 2.2.2.2 ---
+
+Interface                      IP Address    Description
+-----------------------------  ------------  ----------------------------------
+Vlan13                         12.1.0.2 /29  To FortiGate cluster (OSPF Area 0)
+Vlan10 / 20 / 30 / 40 / 50     10.x.x.2 /24  SVIs + HSRP (VIP .254)
+Port-channel1 (Gi0/3 + Gi1/0)  -             Trunk to NH_PRIM, VLAN 10-50
+Gi0/0, Gi0/1, Gi0/2            -             Trunks to ACC-1, ACC-2, ACC-3
+
+--- ISP Routers ---
+
+Router           Interface  IP Address      Role
+---------------  ---------  --------------  -----------------------------
+ISP1 (Vodafone)  e2/0       100.64.0.1 /29  NAT Inside -> WAN_SWITCH1
+ISP1 (Vodafone)  e2/1       DHCP            NAT Outside -> Internet cloud
+ISP2 (WE)        e2/0       100.65.0.1 /29  NAT Inside -> WAN_SWITCH2
+ISP2 (WE)        e2/1       DHCP            NAT Outside -> Internet cloud
+
+--- WAN Switches (Layer 2 only, VLAN 100) ---
+
+Switch       Port  Connected to
+-----------  ----  ------------
+WAN_SWITCH1  e0/0  FG-1 port6
+WAN_SWITCH1  e0/1  FG-2 port6
+WAN_SWITCH1  e0/2  ISP1 e2/0
+WAN_SWITCH2  e0/0  FG-2 port7
+WAN_SWITCH2  e0/1  FG-1 port7
+WAN_SWITCH2  e0/2  ISP2 e2/0
+
+================================================================================================
+5. ROUTING SUMMARY
+================================================================================================
+
+Device     Protocol        Router-ID  Networks / Role
+---------  --------------  ---------  --------------------------------------------------------------------------------
+NH_PRIM    OSPF 1, Area 0  1.1.1.1    VLAN 10-50 + 12.0.0.0/29 (active on Vlan12 only, passive default)
+NH_SEC     OSPF 1, Area 0  2.2.2.2    VLAN 10-50 + 12.1.0.0/29 (active on Vlan13 only, passive default)
+FortiGate  OSPF, Area 0    3.3.3.3    12.0.0.0/29 (port1) + 12.1.0.0/29 (port2) | default-information-originate always
+
+NOTE: WAN links (port6 / port7) are NOT in OSPF. ISPs do not run any routing protocol with the firewall.
+NOTE: Cores learn 0.0.0.0/0 (O*E2) from the FortiGate via 12.0.0.1 / 12.1.0.1.
+NOTE: FortiGate learns VLAN 10-50 from both cores with equal-cost paths (ECMP).
+
+Device     Destination  Mask     Next-Hop                        Purpose
+---------  -----------  -------  ------------------------------  ----------------------------------------------------------------
+FortiGate  0.0.0.0      0.0.0.0  SD-WAN zone ISP (sdwan enable)  Default route over member 1 (100.64.0.1) / member 2 (100.65.0.1)
+ISP1       0.0.0.0      0.0.0.0  DHCP (internet cloud)           Default route to internet
+ISP2       0.0.0.0      0.0.0.0  DHCP (internet cloud)           Default route to internet
+
+================================================================================================
+6. SD-WAN SUMMARY
+================================================================================================
+
+Item            Value
+--------------  -----------------------------------------------------------------------
+Zone            ISP
+Member 1        port6 (WAN) - gateway 100.64.0.1 - ISP1 Vodafone
+Member 2        port7 (WAN_BACKUP) - gateway 100.65.0.1 - ISP2 WE
+Health check    Internet_Check - servers 8.8.8.8 and 1.1.1.1 - interval 1000 ms
+Fail / recover  Dead after 5 failed probes | restored after 5 successful probes
+SD-WAN rule     Primary_ISP1 - priority members 1 then 2 (all source / all destination)
+
+================================================================================================
+7. HIGH AVAILABILITY SUMMARY
+================================================================================================
+
+Item                  Value
+--------------------  ---------------------------------------------
+Mode                  Active-Passive
+Group name            ENTERPRISE-HA
+Priority              FG-1 = 200 (Primary) | FG-2 = 101 (Secondary)
+Heartbeat             port3 and port4
+Session pickup        Enabled
+Monitored interfaces  port1, port2
+Management interface  port5 (reserved) - gateway 192.168.1.1
+
+RULE: the same port on both FortiGates must connect to the same switch (port6 -> WAN_SWITCH1, port7 -> WAN_SWITCH2, port1 -> NH_PRIM, port2 -> NH_SEC).
+
+================================================================================================
+8. ACCESS LAYER SUMMARY
+================================================================================================
+
+Switch       Et0/0 (uplink)  Et0/1 (uplink)  Et0/2           Et0/3             Et1/0
+-----------  --------------  --------------  --------------  ----------------  ---------------
+ACC-1 (SW1)  NH_PRIM Gi0/0   NH_SEC Gi0/0    VLAN 10 (Win4)  VLAN 20 (Linux7)  VLAN 30 (VPC12)
+ACC-2 (SW2)  NH_PRIM Gi0/1   NH_SEC Gi0/1    VLAN 10 (Win5)  VLAN 20 (Linux8)  VLAN 40 (VPC13)
+ACC-3        NH_PRIM Gi0/2   NH_SEC Gi0/2    VLAN 10 (Win6)  VLAN 20 (Linux9)  VLAN 50 (VPC14)
+
+================================================================================================
+9. ETHERCHANNEL SUMMARY
+================================================================================================
+
+Devices             Protocol                          Mode               Ports
+------------------  --------------------------------  -----------------  -----------------------------
+NH_PRIM <-> NH_SEC  Static (channel-group 1 mode on)  Trunk, VLAN 10-50  Gi0/3 + Gi1/0 (Port-channel1)
+
+================================================================================================
+SUBNET QUICK REFERENCE
+================================================================================================
+
+Prefix  Subnet Mask      Usable Hosts  Use Case
+------  ---------------  ------------  -----------------------------------------------
+/29     255.255.255.248  6             Transit and WAN links (FW <-> Core, FW <-> ISP)
+/24     255.255.255.0    254           User VLANs 10 to 50
+
+================================================================================================
+10. NAT AND SECURITY SUMMARY
+================================================================================================
+
+Feature          Applied On                            Detail
+---------------  ------------------------------------  -----------------------------------------------------------------------------
+Firewall policy  FortiGate (port1, port2 -> zone ISP)  LAN_TO_INTERNET_BLK_SOCIAL - accept, NAT enabled, log all sessions
+Web filter       Same policy                           Static URL filter for social-media domains (Block / Monitor / Allow / Exempt)
+SSL inspection   Same policy                           certificate-inspection
+NAT (1st)        FortiGate                             Source NAT to WAN address (100.64.0.3 or 100.65.0.3)
+NAT (2nd)        ISP1, ISP2                            NAT overload to the e2/1 outside address
+Port Security    Access switch host ports              Sticky MAC, one MAC per port
+PortFast         Access switch host ports              Edge ports (not Bridge Assurance network type)
+
+NOTE: Passwords and secrets are intentionally not included in this document.
+
+================================================================================================
+All subnets extracted and verified from the EVE-NG topology and device configurations.
+================================================================================================
