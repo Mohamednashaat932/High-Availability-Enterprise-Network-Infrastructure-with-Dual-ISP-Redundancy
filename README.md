@@ -145,4 +145,4 @@ Full reference: [Subnetting_Table.txt](Subnetting_Table.txt)
 
 ## Author
 
-**Mohamed Nashaat**, Network Engineering Student
+**Mohamed Nashaat**, Network Engineer
